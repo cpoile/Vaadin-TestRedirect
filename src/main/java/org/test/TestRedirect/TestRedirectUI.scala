@@ -74,6 +74,7 @@ class TestRedirectUI extends UI {
   }
 
   def newExperimentUser() {
+    // Problem happens with or without the UI refresher.
     //new SetRefresher(this)
     sessionInProgress = true
     val layout = buildRedirect
@@ -81,6 +82,7 @@ class TestRedirectUI extends UI {
   }
 
   def returningExperimentUser(tfData: String) {
+    // Problem happens with or without the UI refresher.
     //new SetRefresher(this)
     val layout = buildRedirect
     val notice = new Label("Welcome back to the experiment. You had entered: " + tfData)

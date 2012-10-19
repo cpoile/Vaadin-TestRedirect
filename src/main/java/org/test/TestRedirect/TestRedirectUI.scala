@@ -1,20 +1,21 @@
 package org.test.TestRedirect
 
 import com.vaadin.ui._
-import com.vaadin.server.{Page, VaadinRequest}
-import com.vaadin.server.Page.{FragmentChangedEvent, FragmentChangedListener}
-import collection.JavaConverters._
-import collection.mutable
+import com.vaadin.server._
 import com.vaadin.ui.Button.{ClickEvent, ClickListener}
 import java.util.UUID
 import com.vaadin.annotations.PreserveOnRefresh
-import UIExtRefresher.SetRefresher
 import com.vaadin.ui.Label
 import com.vaadin.ui.UI
 import com.vaadin.ui.Button
-import scala.Some
 import com.vaadin.ui.TextField
 import com.vaadin.ui
+import com.vaadin.server.Page
+import scala.Some
+import com.vaadin.server.VaadinRequest
+import com.vaadin.server.VaadinService
+import com.vaadin.server.VaadinServletRequest
+import javax.servlet.http.Cookie
 
 @PreserveOnRefresh
 class TestRedirectUI extends UI {
@@ -23,53 +24,31 @@ class TestRedirectUI extends UI {
   @Override
   def init(request: VaadinRequest) {
     println("UI init called.")
-    val path = request.getRequestPathInfo
-    val params = request.getParameterMap.asScala
-    println("UI Init handled request with url: " + path + " and params: " + params)
 
-    getPage.addFragmentChangedListener(new FragmentChangedListener {
-      def fragmentChanged(event: FragmentChangedEvent) {
-        println("FragmentChangeEvent fired.")
-        handleFragment(event.getFragment, event.getPage)
-      }
-    })
-
-    val frags = getPage.getFragment
-    // if no fragments, create a new experiment.
-    if (frags == null || frags.length == 0) {
-      newExperimentUser()
+    // Try the cookie method.
+    val cookies = request.asInstanceOf[VaadinServletRequest].getCookies
+    val retCode = cookies filter (_.getName == "ExpServerRetCode")
+    val retContent = cookies filter (_.getName == "ExpServerContent")
+    if (retCode.length > 0) {
+      val content = if (retContent.length > 0) retContent(0).getValue else ""
+      handleRetCode(retCode(0).getValue, content, VaadinService.getCurrentResponse.asInstanceOf[VaadinServletResponse])
     }
-    else // handle the new UI's fragment(s) now -- they could be a returning user, or an admin msg:
-      handleFragment(Page.getCurrent.getFragment, Page.getCurrent)
   }
 
-  def handleFragment(frag: String, page: Page) {
-    println("Fragment handled: " + frag)
-    val paramMap = ParamHandler.extractMoreKVs(frag.split('&').toList)
-    println("Frag as paramMap: " + paramMap)
-    page.setFragment("", false)
-    if (paramMap.contains("uuid")) {
-      val uuid = paramMap("uuid")
-      println("received uuid: " + uuid)
-      UserStore.retUsers.get(uuid) match {
-        case None => {
-          println("received uuid: " + uuid + " which was not found in the DB. Treating as a new user.")
-          newExperimentUser()
-        }
-        case Some(retUserInfo) if (sessionInProgress && paramMap.contains("content")) => {
-          println("Returning user in their old session")
-          UserStore.retUsers -= uuid
-          // Do some system-specific work to get the user's view, and then set it.
-          returningExperimentUser(paramMap("content"))
-        }
-        case Some(retUserInfo) if (!sessionInProgress && paramMap.contains("content")) => {
-          println("Returning user in a new session. uuid, ReturningUserInfo: " + uuid + ", " + retUserInfo)
-          UserStore.retUsers -= uuid
-          returningExperimentUser(paramMap("content"))
-        }
+  def handleRetCode(uuid: String, content: String, response: VaadinServletResponse) {
+    println("Found return code: " + uuid)
+    UserStore.retUsers.get(uuid) match {
+      case None => {
+        println("received uuid: " + uuid + " which was not found in the DB. Treating as a new user.")
+        newExperimentUser()
       }
-    }  else {
-      newExperimentUser()
+      case Some(retUserInfo) => {
+        println("Returning user in a new session. uuid, ReturningUserInfo: " + uuid + ", " + retUserInfo)
+        UserStore.retUsers -= uuid
+        response.addCookie(makeCookie("ExpServerRetCode", "", 0, "/"))
+        response.addCookie(makeCookie("ExpServerContent", "", 0, "/"))
+        returningExperimentUser(content)
+      }
     }
   }
 
@@ -77,6 +56,7 @@ class TestRedirectUI extends UI {
     // Problem happens with or without the UI refresher.
     //new SetRefresher(this)
     sessionInProgress = true
+
     val layout = buildRedirect
     setContent(layout)
   }
@@ -100,7 +80,23 @@ class TestRedirectUI extends UI {
       def buttonClick(event: ClickEvent) {
         val uuid = UUID.randomUUID().toString
         UserStore.retUsers += (uuid -> tf.getValue)
-        Page.getCurrent.setLocation(surveyLocation + "?uuid=" + uuid + "&content=" + tf.getValue)
+
+        /**
+         * One solution is to delete all cookies before sending the user away.
+         * This way we hit the UI init funtions above and can extract the return code uuid
+         * But would this cause unanticipated problems with the way Vaadin works?
+         */
+        val cookies = VaadinService.getCurrentRequest.asInstanceOf[VaadinServletRequest].getCookies
+        println("cookies: " + cookies)
+        for (c <- cookies) {
+          c.setMaxAge(0)
+          c.setPath("/")
+          VaadinService.getCurrentResponse.asInstanceOf[VaadinServletResponse].addCookie(c)
+        }
+        VaadinService.getCurrentResponse.asInstanceOf[VaadinServletResponse].addCookie(makeCookie("ExpServerRetCode", uuid, 60*60, "/"))
+        VaadinService.getCurrentResponse.asInstanceOf[VaadinServletResponse].addCookie(makeCookie("ExpServerContent", tf.getValue, 60*60, "/"))
+
+        Page.getCurrent.setLocation(surveyLocation + "?uuid=" + uuid)
       }
     })
 
@@ -108,4 +104,10 @@ class TestRedirectUI extends UI {
     layout
   }
 
+  def makeCookie(name: String, value: String, expiry: Int, path: String): Cookie = {
+    val c = new Cookie(name, value)
+    c.setMaxAge(expiry)
+    c.setPath(path)
+    c
+  }
 }
